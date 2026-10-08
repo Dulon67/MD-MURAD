@@ -1,0 +1,6 @@
+{
+  "name": "BD Crime & Incident News Archive",
+  "description": "রিয়েল-টাইম বাংলাদেশী নিউজ পোর্টাল স্ক্র্যাপার ও অপরাধ-সংক্রান্ত সংবাদের স্বয়ংক্রিয় ডাটাবেজ সিস্টেম (তারিখ ও কি-ওয়ার্ড ফিল্টার সহ)।",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

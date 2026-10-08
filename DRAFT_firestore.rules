@@ -1,0 +1,191 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidCategory(cat) {
+      return cat is string && cat.size() >= 2 && cat.size() <= 100;
+    }
+
+    function isValidVerificationStatus(status) {
+      return status is string && status.size() >= 6 && status.size() <= 20 && (
+        status == 'unverified' ||
+        status == 'verified' ||
+        status == 'flagged' ||
+        status == 'archived'
+      );
+    }
+
+    // 3. Entity Validation Blueprints (Anti-Update-Gap)
+    function isValidNewsArticle(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'title',
+          'summary',
+          'url',
+          'portalName',
+          'portalDomain',
+          'category',
+          'matchedKeywords',
+          'district',
+          'publishedDate',
+          'publishedAt',
+          'verificationStatus',
+          'notes',
+          'isBookmarked',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId',
+          'title',
+          'summary',
+          'url',
+          'portalName',
+          'portalDomain',
+          'category',
+          'matchedKeywords',
+          'district',
+          'publishedDate',
+          'publishedAt',
+          'verificationStatus',
+          'notes',
+          'isBookmarked',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 400 &&
+        data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 1500 &&
+        data.url is string && data.url.size() >= 8 && data.url.size() <= 1000 && data.url.matches('^https?://.*$') &&
+        data.portalName is string && data.portalName.size() >= 1 && data.portalName.size() <= 120 &&
+        data.portalDomain is string && data.portalDomain.size() >= 3 && data.portalDomain.size() <= 120 &&
+        isValidCategory(data.category) &&
+        data.matchedKeywords is string && data.matchedKeywords.size() >= 1 && data.matchedKeywords.size() <= 500 &&
+        data.district is string && data.district.size() >= 1 && data.district.size() <= 100 &&
+        data.publishedDate is string && data.publishedDate.size() == 10 && data.publishedDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        data.publishedAt is string && data.publishedAt.size() >= 10 && data.publishedAt.size() <= 40 &&
+        isValidVerificationStatus(data.verificationStatus) &&
+        data.notes is string && data.notes.size() >= 0 && data.notes.size() <= 1000 &&
+        data.isBookmarked is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidKeywordConfig(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'category',
+          'keywordsCsv',
+          'autoSyncEnabled',
+          'syncIntervalMinutes',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId',
+          'category',
+          'keywordsCsv',
+          'autoSyncEnabled',
+          'syncIntervalMinutes',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        isValidCategory(data.category) &&
+        data.keywordsCsv is string && data.keywordsCsv.size() >= 1 && data.keywordsCsv.size() <= 1000 &&
+        data.autoSyncEnabled is bool &&
+        data.syncIntervalMinutes is int && data.syncIntervalMinutes >= 1 && data.syncIntervalMinutes <= 1440 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Rules: /news_articles/{articleId}
+    match /news_articles/{articleId} {
+      allow get: if isSignedIn() && isValidId(articleId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(articleId) &&
+        isValidNewsArticle(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidId(articleId) &&
+        isValidNewsArticle(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        existing().verificationStatus != 'archived' &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().url == existing().url &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Toggle Bookmark
+          incoming().diff(existing()).affectedKeys().hasOnly(['isBookmarked', 'updatedAt']) ||
+          // Action 2: Analyst Verification & Notes Update
+          incoming().diff(existing()).affectedKeys().hasOnly(['verificationStatus', 'notes', 'updatedAt']) ||
+          // Action 3: Category / Keyword / District Reclassification
+          incoming().diff(existing()).affectedKeys().hasOnly(['category', 'matchedKeywords', 'district', 'updatedAt'])
+        );
+
+      allow delete: if isSignedIn() &&
+        isValidId(articleId) &&
+        existing().ownerId == request.auth.uid;
+    }
+
+    // 5. Collection Rules: /keyword_configs/{configId}
+    match /keyword_configs/{configId} {
+      allow get: if isSignedIn() && isValidId(configId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(configId) &&
+        isValidKeywordConfig(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn() &&
+        isValidId(configId) &&
+        isValidKeywordConfig(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().category == existing().category &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Update Keywords
+          incoming().diff(existing()).affectedKeys().hasOnly(['keywordsCsv', 'updatedAt']) ||
+          // Action 2: Update Auto-Sync Schedule
+          incoming().diff(existing()).affectedKeys().hasOnly(['autoSyncEnabled', 'syncIntervalMinutes', 'updatedAt']) ||
+          // Action 3: Update Both Keywords and Auto-Sync Schedule
+          incoming().diff(existing()).affectedKeys().hasOnly(['keywordsCsv', 'autoSyncEnabled', 'syncIntervalMinutes', 'updatedAt'])
+        );
+
+      allow delete: if isSignedIn() &&
+        isValidId(configId) &&
+        existing().ownerId == request.auth.uid;
+    }
+  }
+}
